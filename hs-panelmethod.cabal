@@ -24,6 +24,7 @@ executable hs-panelmethod
   build-depends:       base >= 4.0,
                        hmatrix,
                        linear,
+                       parallel,
                        vector >= 0.8,
                        OpenGL,
                        OpenGLRaw,
