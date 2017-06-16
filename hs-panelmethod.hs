@@ -15,6 +15,7 @@
 
 module Main where
 
+import Control.Monad (unless)
 import Graphics.UI.GLUT
 import Data.Foldable (foldl')
 import qualified Graphics.GLUtil as U
@@ -171,24 +172,25 @@ click _res _position = do
         Nothing ->
             _res $~! (\x -> x { partialLine = Just p } )
         Just pos ->
-            do
-            let newLines = (pos,p) : ls
-                pair = findClosedPolygon newLines
-            case pair of
-                ([],_)         ->
-                    _res $~! (\x -> x { lineList = newLines
-                                      , lineCount = lc + 1
-                                      , partialLine = Nothing }
-                             )
-                (polygon,rest) ->
-                    _res $~! (\x -> x { lineList = rest
-                                      , lineCount = toEnum $ length rest
-                                      , polygons = polygon:polys 
-                                      , partialLine = Nothing}
-                              )
-            -- print pair
-            updateFlow _res
-            postRedisplay Nothing
+            unless (pos == p) $
+                do
+                let newLines = (pos,p) : ls
+                    pair = findClosedPolygon newLines
+                case pair of
+                    ([],_)         ->
+                        _res $~! (\x ->
+                            x { lineList = newLines
+                              , lineCount = lc + 1
+                              , partialLine = Nothing } )
+                    (polygon,rest) ->
+                        _res $~! (\x ->
+                            x { lineList = rest
+                              , lineCount = toEnum $ length rest
+                              , polygons = polygon:polys
+                              , partialLine = Nothing} )
+                -- print pair
+                updateFlow _res
+                postRedisplay Nothing
 
 updateFlow :: IORef Resources -> IO ()
 updateFlow _res = do
