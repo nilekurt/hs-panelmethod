@@ -186,7 +186,7 @@ click _res _position = do
                                       , polygons = polygon:polys 
                                       , partialLine = Nothing}
                               )
-            print pair
+            -- print pair
             updateFlow _res
             postRedisplay Nothing
 
