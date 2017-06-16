@@ -154,7 +154,7 @@ findClosedPolygon ls = ([],ls) --(connected,rest)
     where
     (connected,rest) = partition (\(v1,v2)->
         elem v1 intersectionPoints && elem v2 intersectionPoints) ls
-    intersectionPoints = foldr (\(_,v1) acc->
+    intersectionPoints = foldl' (\acc (_,v1)->
         case find (\(v2,_) -> v1 == v2) ls of
             Nothing -> acc
             Just _  -> v1:acc) [] ls
@@ -222,11 +222,12 @@ calculateStream ls =
     let numberedList = zip [(0::Int)..] ls
         equations = map (\z@(_,target) ->
             (foldr (foldingFunction z) [] numberedList, -freestreamStrength target)
-                        ) numberedList
+            ) numberedList
         leftHandSide = map (map float2Double . fst) equations
         rightHandSide = map (float2Double . snd) equations
         n = length rightHandSide
-        strengths = LA.linearSolve (LA.fromLists leftHandSide :: LA.Matrix LA.R) ((n LA.>< 1) rightHandSide) in
+        strengths = LA.linearSolve (LA.fromLists leftHandSide :: LA.Matrix LA.R)
+                                   ((n LA.>< 1) rightHandSide) in
         case strengths of
             Nothing -> []
             Just s  -> zip ls (map double2Float . concat $ LA.toLists s)
@@ -286,7 +287,7 @@ discretize (p1, p2) count = (map (\n -> p1 + dds * fromInteger n) [0..round coun
 totalVelocity :: [(MyLine,Float)] -> V2 Float -> V2 Float
 totalVelocity sources p2 = sourceContrib + freestreamVelocity
     where
-    sourceContrib = foldr (\panel acc-> acc + velocityContribAt p2 panel) (V2 0 0) sources
+    sourceContrib = foldl' (\acc panel-> acc + velocityContribAt p2 panel) (V2 0 0) sources
 
 velocityContribAt :: V2 Float -> (MyLine,Float) -> V2 Float
 velocityContribAt target (panel,strength) = integralCoefficient target panel ^* (strength/(2*pi))
