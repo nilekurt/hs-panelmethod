@@ -146,8 +146,8 @@ input _ _ _ _ _ = return ()
 translateGLUTCoords :: Size -> Position -> V2 Float
 translateGLUTCoords (Size _ height) (Position x y) = V2 (fromIntegral x) (fromIntegral $ height - y)
 
-findEndpoint :: [MyLine] -> V2 Float -> Maybe (V2 Float)
-findEndpoint ls p = find (\v -> qd v p < 100) $ foldr (\(x,y) acc-> x:y:acc) [] ls
+findEndpoint :: V2 Float -> [MyLine] -> Maybe (V2 Float)
+findEndpoint p = find (\v -> qd v p < 100) . foldr (\(x,y) acc-> x:y:acc) []
 
 findClosedPolygon :: [MyLine] -> ([MyLine], [MyLine])
 findClosedPolygon ls = ([],ls) --(connected,rest)
@@ -166,7 +166,7 @@ click _res _position = do
         lc = lineCount r
         pl = partialLine r
         polys = polygons r
-        existing = findEndpoint ls _position
+        existing = findEndpoint _position ls
         p = head $ catMaybes (existing : [Just _position])
     case pl of
         Nothing ->
