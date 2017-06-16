@@ -52,8 +52,8 @@ initVertexBuffer = U.makeBuffer ArrayBuffer ([] :: [GLfloat])
 
 initShaders :: IO Shaders
 initShaders = do
-        vs <- U.loadShader VertexShader "test.v.glsl"
-        fs <- U.loadShader FragmentShader "test.f.glsl"
+        vs <- U.loadShader VertexShader "vert.glsl"
+        fs <- U.loadShader FragmentShader "frag.glsl"
         p <- U.linkShaderProgram [vs,fs]
         vpos <- get (attribLocation p "in_Position")
         mvp <- get (uniformLocation p "transform")
