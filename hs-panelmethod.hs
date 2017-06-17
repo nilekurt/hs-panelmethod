@@ -55,17 +55,16 @@ initVertexBuffer = U.makeBuffer ArrayBuffer ([] :: [GLfloat])
 
 initShaders :: IO Shaders
 initShaders = do
-        vs <- U.loadShader VertexShader "vert.glsl"
-        fs <- U.loadShader FragmentShader "frag.glsl"
-        p <- U.linkShaderProgram [vs,fs]
-        vpos <- get (attribLocation p "in_Position")
-        mvp <- get (uniformLocation p "transform")
-        return Shaders { vertexShader = vs
-                         , fragmentShader = fs
-                         , program = p
-                         , vertexPosition = vpos
-                         , transform = mvp }
-
+    vs <- U.loadShader VertexShader "vert.glsl"
+    fs <- U.loadShader FragmentShader "frag.glsl"
+    p <- U.linkShaderProgram [vs,fs]
+    vpos <- get (attribLocation p "in_Position")
+    mvp <- get (uniformLocation p "transform")
+    return Shaders { vertexShader = vs
+                   , fragmentShader = fs
+                   , program = p
+                   , vertexPosition = vpos
+                   , transform = mvp }
 
 initResources :: IO Resources
 initResources = do
@@ -81,7 +80,7 @@ initResources = do
                      , stream = []
                      , streamVectorCount = 0
                      , gridSize = 15
-                     , polygons = []}
+                     , polygons = [] }
 
 main :: IO ()
 main = do
@@ -108,14 +107,12 @@ display _res = do
         transformMatrix = transform shader
         prog = program shader
         size@(Size width height) = winSize r
-        fx = fromIntegral width
-        fy = fromIntegral height
         vad = VertexArrayDescriptor 2 Float 0 U.offset0
     clearColor $= Color4 0 0 0.3 1
     clear [ ColorBuffer ]
     viewport $= (Position 0 0, size)
     currentProgram $= Just prog
-    let mvp = getOrtho 0 fx 0 fy
+    let mvp = getOrtho 0 (fromIntegral width) 0 (fromIntegral height)
     U.asUniform mvp transformMatrix
     vertexAttribArray pos $= Enabled
     vertexAttribPointer pos $= (ToFloat, vad)
@@ -124,25 +121,20 @@ display _res = do
     swapBuffers
 
 reshape :: IORef Resources -> ReshapeCallback
-reshape _res size =
-    do
-        _res $~! (\x -> x { winSize = size })
-        updateFlow _res
-        postRedisplay Nothing
+reshape _res size = do
+    _res $~! (\x -> x { winSize = size })
+    updateFlow _res
+    postRedisplay Nothing
 
 motion :: IORef Resources -> MotionCallback
-motion _res (Position x y) =
-    do
-        _res $~! (\r -> r {mousePos = V2 (fromIntegral x) (fromIntegral y)})
-        return ()
+motion _res (Position x y) = _res $~! (\r -> r {mousePos = V2 (fromIntegral x) (fromIntegral y)})
 
 input :: IORef Resources -> KeyboardMouseCallback
-input _res _key Down _modifiers p =
-    do
-        r <- get _res
-        case _key of
-            MouseButton LeftButton  -> click _res (translateGLUTCoords (winSize r) p)
-            _                       -> return ()
+input _res _key Down _modifiers p = do
+    r <- get _res
+    case _key of
+        MouseButton LeftButton  -> click _res (translateGLUTCoords (winSize r) p)
+        _                       -> return ()
 input _ _ _ _ _ = return ()
 
 translateGLUTCoords :: Size -> Position -> FV2
@@ -174,8 +166,7 @@ click _res _position = do
         Nothing ->
             _res $~! (\x -> x { partialLine = Just p } )
         Just oldPoint ->
-            unless (oldPoint == p) $
-                do
+            unless (oldPoint == p) $ do
                 let newLines = MyLine oldPoint p : ls
                     pair = findClosedPolygon newLines
                 case pair of
@@ -229,10 +220,10 @@ calculateStream ls =
         rightHandSide = map (float2Double . snd) equations
         n = length rightHandSide
         strengths = linearSolve (fromLists leftHandSide :: Matrix R)
-                                   ((n >< 1) rightHandSide) in
-        case strengths of
-            Nothing -> []
-            Just s  -> zip ls (map double2Float . concat $ toLists s)
+                                ((n >< 1) rightHandSide) in
+    case strengths of
+        Nothing -> []
+        Just s  -> zip ls (map double2Float . concat $ toLists s)
 
 getOrtho :: Float -> Float -> Float -> Float -> M44 GLfloat
 getOrtho left right bottom top =
@@ -262,8 +253,7 @@ visualizeStream :: (Float, Float, Float, Float, Float) -> [(MyLine,Float)] -> [M
 visualizeStream (left, right, bottom, top, delta) sources = zipWith MyLine coords (zipWith (+) coords normalizedField)
     where
     scalingFactor = 0.9 * delta/norm freestreamVelocity
-    normalizedField = map (scalingFactor *^) velocityField
-    velocityField = parMap rdeepseq (totalVelocity sources) coords
+    normalizedField = parMap rdeepseq ((scalingFactor *^) . totalVelocity sources) coords
     coords = [V2 x y | x <- [left,left+delta..right], y <- [bottom,bottom+delta..top]]
 
 freestreamVelocity :: FV2
