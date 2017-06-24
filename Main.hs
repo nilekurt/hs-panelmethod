@@ -15,20 +15,19 @@
 
 module Main where
 
-import Control.Parallel.Strategies (parMap,rdeepseq)
 import Control.Monad (unless)
+import Control.Parallel.Strategies (parMap,rdeepseq)
 import Data.Foldable (foldl')
 import Data.IORef
 import Data.List (find, partition)
 import Data.Maybe (catMaybes)
 import GHC.Float (float2Double, double2Float)
-import Graphics.UI.GLUT hiding (Matrix)
+import Graphics.UI.GLUT hiding (Matrix,Line)
 import qualified Graphics.GLUtil as U
 import Linear
 import Numeric.LinearAlgebra (linearSolve, fromLists, toLists, Matrix, R, (><))
+import VectorUtils
 
-type FV2 = V2 Float
-data MyLine = MyLine FV2 FV2
 
 data Shaders = Shaders {  vertexShader :: Shader
                         , fragmentShader :: Shader
@@ -39,15 +38,15 @@ data Shaders = Shaders {  vertexShader :: Shader
 
 data Resources = Resources {  vertexBuffer :: BufferObject
                             , shaders :: Shaders
-                            , lineList :: [MyLine]
+                            , lineList :: [Line]
                             , lineCount :: GLint
                             , partialLine :: Maybe FV2
                             , mousePos :: FV2
                             , winSize :: Size
-                            , stream :: [(MyLine,Float)]
+                            , stream :: [(Line,Float)]
                             , streamVectorCount :: GLint
                             , gridSize :: Float
-                            , polygons :: [[MyLine]]
+                            , polygons :: [[Line]]
                             }
 
 initVertexBuffer :: IO BufferObject
@@ -100,24 +99,27 @@ main = do
 display :: IORef Resources -> DisplayCallback
 display _res = do
     r <- get _res
-    let lc = lineCount r
-        vc = streamVectorCount r
-        shader = shaders r
-        pos = vertexPosition shader
+    let lCount          = lineCount r
+        vCount          = streamVectorCount r
+        vertexCount     = 2 * (lCount + vCount)
+        vertexBuf       = vertexBuffer r
+        shader          = shaders r
+        pos             = vertexPosition shader
         transformMatrix = transform shader
-        prog = program shader
+        prog            = program shader
         size@(Size width height) = winSize r
-        vad = VertexArrayDescriptor 2 Float 0 U.offset0
+        mvp             = getOrtho 0 (fromIntegral width)
+                                   0 (fromIntegral height)
+        descriptor      = VertexArrayDescriptor 2 Float 0 U.offset0
     clearColor $= Color4 0 0 0.3 1
     clear [ ColorBuffer ]
     viewport $= (Position 0 0, size)
     currentProgram $= Just prog
-    let mvp = getOrtho 0 (fromIntegral width) 0 (fromIntegral height)
     U.asUniform mvp transformMatrix
     vertexAttribArray pos $= Enabled
-    vertexAttribPointer pos $= (ToFloat, vad)
-    bindBuffer ArrayBuffer $= Just (vertexBuffer r)
-    drawArrays Lines 0 (2*(vc+lc))
+    vertexAttribPointer pos $= (ToFloat, descriptor)
+    bindBuffer ArrayBuffer $= Just vertexBuf
+    drawArrays Lines 0 vertexCount
     swapBuffers
 
 reshape :: IORef Resources -> ReshapeCallback
@@ -140,40 +142,40 @@ input _ _ _ _ _ = return ()
 translateGLUTCoords :: Size -> Position -> FV2
 translateGLUTCoords (Size _ height) (Position x y) = V2 (fromIntegral x) (fromIntegral $ height - y)
 
-findEndpoint :: FV2 -> [MyLine] -> Maybe FV2
-findEndpoint p = find (\v -> qd v p < 100) . foldr (\(MyLine v1 v2) acc-> v1:v2:acc) []
+findEndpoint :: FV2 -> [Line] -> Maybe FV2
+findEndpoint p = find (\v -> qd v p < 100) . foldr (\(Line v1 v2) acc-> v1:v2:acc) []
 
-findClosedPolygon :: [MyLine] -> ([MyLine], [MyLine])
+findClosedPolygon :: [Line] -> ([Line], [Line])
 findClosedPolygon ls = ([],ls) --(connected,rest)
     where
-    (connected,rest) = partition (\(MyLine v1 v2)->
+    (connected,rest) = partition (\(Line v1 v2)->
         elem v1 intersectionPoints && elem v2 intersectionPoints) ls
-    intersectionPoints = foldl' (\acc (MyLine _ v1)->
-        case find (\(MyLine v2 _) -> v1 == v2) ls of
+    intersectionPoints = foldl' (\acc (Line _ v1)->
+        case find (\(Line v2 _) -> v1 == v2) ls of
             Nothing -> acc
             Just _  -> v1:acc) [] ls
 
 click :: IORef Resources -> FV2 -> IO ()
 click _res _position = do
     r <- get _res
-    let ls = lineList r
-        lc = lineCount r
-        pl = partialLine r
-        polys = polygons r
+    let ls       = lineList r
+        lCount   = lineCount r
+        partial  = partialLine r
+        polys    = polygons r
         existing = findEndpoint _position ls
-        p = head $ catMaybes (existing : [Just _position])
-    case pl of
+        p        = head $ catMaybes (existing : [Just _position])
+    case partial of
         Nothing ->
             _res $~! (\x -> x { partialLine = Just p } )
         Just oldPoint ->
             unless (oldPoint == p) $ do
-                let newLines = MyLine oldPoint p : ls
+                let newLines = Line oldPoint p : ls
                     pair = findClosedPolygon newLines
                 case pair of
                     ([],_)         ->
                         _res $~! (\x ->
                             x { lineList = newLines
-                              , lineCount = lc + 1
+                              , lineCount = lCount + 1
                               , partialLine = Nothing } )
                     (polygon,rest) ->
                         _res $~! (\x ->
@@ -188,11 +190,11 @@ click _res _position = do
 updateFlow :: IORef Resources -> IO ()
 updateFlow _res = do
     r <- get _res
-    let ls = lineList r
+    let ls                = lineList r
         Size width height = winSize r
-        newStream = calculateStream ls
-        gs = gridSize r
-        visualization = visualizeStream (0, fromIntegral width, 0, fromIntegral height, gs) newStream
+        gs                = gridSize r
+        newStream         = calculateStream ls
+        visualization     = visualizeStream (0, fromIntegral width, 0, fromIntegral height, gs) newStream
     vb <- U.makeBuffer ArrayBuffer (serialize $ ls ++ visualization :: [GLfloat])
     _res $~! (\x -> x { stream = newStream
                       , vertexBuffer = vb
@@ -200,17 +202,10 @@ updateFlow _res = do
     where
     serialize = concatMap deVector . concatMap deLine
     deVector (V2 x y) = [x,y]
-    deLine (MyLine v1 v2) = [v1,v2]
+    deLine (Line v1 v2) = [v1,v2]
 
-foldingFunction :: Eq a => (a,MyLine) -> (a,MyLine) -> [Float] -> [Float]
-foldingFunction (i,controlPoint) (j,panel) acc
-    | i == j    = 0.5 : acc
-    | otherwise = dot n inducedVelocity / (2*pi) : acc
-    where
-    inducedVelocity = integralCoefficient (getMidpoint controlPoint) panel
-    n = getNormal controlPoint
 
-calculateStream :: [MyLine] -> [(MyLine,Float)]
+calculateStream :: [Line] -> [(Line,Float)]
 calculateStream ls =
     let numberedList = zip [(0::Int)..] ls
         equations = map (\z@(_,target) ->
@@ -224,6 +219,13 @@ calculateStream ls =
     case strengths of
         Nothing -> []
         Just s  -> zip ls (map double2Float . concat $ toLists s)
+    where
+    foldingFunction (i,controlPoint) (j,panel) acc
+        | i == j    = 0.5 : acc
+        | otherwise = dot n inducedVelocity / (2*pi) : acc
+        where
+        inducedVelocity = integralCoefficient (getMidpoint controlPoint) panel
+        n = getNormal controlPoint
 
 getOrtho :: Float -> Float -> Float -> Float -> M44 GLfloat
 getOrtho left right bottom top =
@@ -241,16 +243,8 @@ getOrtho left right bottom top =
     ty = - (top + bottom)/(top - bottom)
     tz = - (far + near)/(far - near)
 
-getNormal :: MyLine -> FV2
-getNormal (MyLine v1 v2) = Linear.normalize $ V2 (-dy) dx
-    where
-    V2 dx dy = v2 - v1
-
-getMidpoint :: MyLine -> FV2
-getMidpoint (MyLine v1 v2)  = 0.5 * (v1 + v2)
-
-visualizeStream :: (Float, Float, Float, Float, Float) -> [(MyLine,Float)] -> [MyLine]
-visualizeStream (left, right, bottom, top, delta) sources = zipWith MyLine coords (zipWith (+) coords normalizedField)
+visualizeStream :: (Float, Float, Float, Float, Float) -> [(Line,Float)] -> [Line]
+visualizeStream (left, right, bottom, top, delta) sources = zipWith Line coords (zipWith (+) coords normalizedField)
     where
     scalingFactor = 0.9 * delta/norm freestreamVelocity
     normalizedField = parMap rdeepseq ((scalingFactor *^) . totalVelocity sources) coords
@@ -259,27 +253,20 @@ visualizeStream (left, right, bottom, top, delta) sources = zipWith MyLine coord
 freestreamVelocity :: FV2
 freestreamVelocity = V2 25.0 0.0
 
-freestreamStrength :: MyLine -> Float
+freestreamStrength :: Line -> Float
 freestreamStrength l = getNormal l `dot` freestreamVelocity
 
-integralCoefficient :: FV2 -> MyLine -> FV2
+integralCoefficient :: FV2 -> Line -> FV2
 integralCoefficient target panel = foldl' integration (V2 0 0) chunks
     where
     integration acc v = acc + (target - v) ^* (ds / qd target v)
     (chunks,ds) = discretize panel subDivisions
     subDivisions = 100
 
-discretize :: MyLine -> Float -> ([FV2],Float)
-discretize (MyLine v1 v2) count = (map (\n -> v1 + dds * fromInteger n) [0..round count], nds)
-    where
-    ds = v2 - v1
-    dds = ds ^/ count
-    nds = norm dds
-
-totalVelocity :: [(MyLine,Float)] -> FV2 -> FV2
+totalVelocity :: [(Line,Float)] -> FV2 -> FV2
 totalVelocity sources p2 = sourceContrib + freestreamVelocity
     where
     sourceContrib = foldl' (\acc panel-> acc + velocityContribAt p2 panel) (V2 0 0) sources
 
-velocityContribAt :: FV2 -> (MyLine,Float) -> FV2
+velocityContribAt :: FV2 -> (Line,Float) -> FV2
 velocityContribAt target (panel,strength) = integralCoefficient target panel ^* (strength/(2*pi))
