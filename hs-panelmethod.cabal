@@ -21,7 +21,7 @@ cabal-version:       >=1.10
 executable hs-panelmethod
   main-is:           Main.hs
   other-modules:     VectorUtils
-  build-depends:     base >= 4.0 && < 4.9,
+  build-depends:     base >= 4.0 && <= 4.9.1.0,
                      hmatrix,
                      linear,
                      parallel,
@@ -32,6 +32,6 @@ executable hs-panelmethod
                      GLUtil
   --hs-source-dirs:
   default-language:  Haskell2010
-  ghc-options:       -Wall -O3 -threaded -dynamic
+  ghc-options:       -Wall -O3 -threaded -dynamic -fllvm
   if os(windows)
       build-depends: Win32
