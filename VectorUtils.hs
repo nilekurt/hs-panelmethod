@@ -19,13 +19,19 @@ module VectorUtils
  , getNormal
  , getMidpoint
  , discretize
- , furthestLines )
+ , furthestLines
+ , serializeVector2
+ , serializeVector4
+ , serializeMatrix4 )
 where
 
 import Linear
 
 type FV2 = V2 Float
 data Line = Line FV2 FV2
+
+instance Show Line where
+    show (Line a b) = show (a,b)
 
 getNormal :: Line -> FV2
 getNormal (Line v1 v2) = Linear.normalize $ V2 (-dy) dx
@@ -52,3 +58,12 @@ furthestLines dir ls = hasPoint (furthestPoint . pointDistances dir $ ls) ls
             d2 = dot v2 x in
         if d1 > d2 then (v1,d1) else (v2,d2) 
         )
+
+serializeVector2 :: V2 a -> [a]
+serializeVector2 (V2 x y) = [x,y]
+
+serializeVector4 :: V4 a -> [a]
+serializeVector4 (V4 x y z w) = [x,y,z,w]
+
+serializeMatrix4 :: M44 a -> [a]
+serializeMatrix4 = concatMap serializeVector4 . serializeVector4

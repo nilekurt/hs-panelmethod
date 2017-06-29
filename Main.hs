@@ -15,132 +15,266 @@
 
 module Main where
 
-import Control.Monad (unless)
+import Control.Monad (unless,when)
 import Control.Parallel.Strategies (parMap,rdeepseq)
 import Data.Foldable (foldl')
 import Data.IORef
 import Data.List (find, partition)
-import Data.Maybe (catMaybes)
+import Data.Maybe (catMaybes,fromJust)
+import Foreign
+import Foreign.C.String
 import GHC.Float (float2Double, double2Float)
-import Graphics.UI.GLUT hiding (Matrix,Line)
-import qualified Graphics.GLUtil as U
+import Graphics.GL
+import Graphics.UI.GLFW
 import Linear
 import Numeric.LinearAlgebra (linearSolve, fromLists, toLists, Matrix, R, (><))
+import System.IO
 import VectorUtils
 
+type Panel = (Line,Float)
 
-data Shaders = Shaders {  vertexShader :: Shader
-                        , fragmentShader :: Shader
-                        , program :: Program
-                        , vertexPosition :: AttribLocation
-                        , transform :: UniformLocation
+data Shaders = Shaders {  vertexShader :: GLuint
+                        , fragmentShader :: GLuint
+                        , program :: GLuint
+                        , vertexPosition :: GLuint
+                        , panelBlockIndex :: GLuint
+                        , transformUniform :: GLint
+                        , numPanelsUniform :: GLint
+                        , freestreamUniform :: GLint
                         }
 
-data Resources = Resources {  vertexBuffer :: BufferObject
+data Resources = Resources {  lineBuffer :: GLuint
+                            , quadBuffer :: GLuint
+                            , panelBuffer :: GLuint
                             , shaders :: Shaders
                             , lineList :: [Line]
                             , lineCount :: GLint
                             , partialLine :: Maybe FV2
                             , mousePos :: FV2
-                            , winSize :: Size
-                            , stream :: [(Line,Float)]
-                            , streamVectorCount :: GLint
+                            , winSize :: (Int,Int)
+                            , panels :: [Panel]
+                            , panelCount :: GLint
                             , gridSize :: Float
                             , polygons :: [[Line]]
                             }
 
-initVertexBuffer :: IO BufferObject
-initVertexBuffer = U.makeBuffer ArrayBuffer ([] :: [GLfloat])
+printGLErrors :: IO ()
+printGLErrors = do
+    errorCode <- glGetError
+    when (errorCode /= GL_NO_ERROR) $
+        do
+        putStr "OpenGL Error: "
+        print errorCode
+        printGLErrors
+
+initBuffer :: IO GLuint
+initBuffer = alloca $ \result ->
+    do
+    putStrLn "Initializing buffer"
+    glCreateBuffers 1 result
+    printGLErrors
+    peek result
+
+loadShader :: GLenum -> String -> IO GLuint
+loadShader shaderType path = withFile path ReadMode $ \h->
+    do
+    putStrLn "Loading shader"
+    text <- hGetContents h
+    s <- glCreateShader shaderType
+    printGLErrors
+    withCString text $ \str->
+        alloca $ \strp -> do
+            poke strp str
+            glShaderSource s (toEnum $ length text) strp nullPtr
+            printGLErrors
+    glCompileShader s
+    printGLErrors
+    return s
 
 initShaders :: IO Shaders
 initShaders = do
-    vs <- U.loadShader VertexShader "vert.glsl"
-    fs <- U.loadShader FragmentShader "frag.glsl"
-    p <- U.linkShaderProgram [vs,fs]
-    vpos <- get (attribLocation p "in_Position")
-    mvp <- get (uniformLocation p "transform")
+    vs <- loadShader GL_VERTEX_SHADER "vert.glsl"
+    fs <- loadShader GL_FRAGMENT_SHADER "frag.glsl"
+    putStrLn "Creating shader program"
+    p <- glCreateProgram
+    printGLErrors
+    putStrLn "Attaching shaders"
+    glAttachShader p vs
+    printGLErrors
+    glAttachShader p fs
+    printGLErrors
+    putStrLn "Binding attribute location"
+    withCString "in_Position" $ \str-> glBindAttribLocation p 0 str
+    printGLErrors
+    putStrLn "Linking program"
+    glLinkProgram p
+    printGLErrors
+    putStrLn "Getting uniforms"
+    tu <- withCString "transform" $ \str-> glGetUniformLocation p str
+    printGLErrors
+    npu <- withCString "numPanels" $ \str-> glGetUniformLocation p str
+    printGLErrors
+    fsu <- withCString "freestream" $ \str-> glGetUniformLocation p str
+    printGLErrors
+    pbi <- withCString "panels" $ \str-> glGetUniformBlockIndex p str
+    printGLErrors
+    putStrLn "Binding uniform block"
+    glUniformBlockBinding p pbi 2
+    printGLErrors
     return Shaders { vertexShader = vs
                    , fragmentShader = fs
                    , program = p
-                   , vertexPosition = vpos
-                   , transform = mvp }
+                   , vertexPosition = 0
+                   , panelBlockIndex = pbi
+                   , transformUniform = tu
+                   , numPanelsUniform = npu
+                   , freestreamUniform  = fsu }
 
 initResources :: IO Resources
 initResources = do
-    vbuf <- initVertexBuffer
+    lbuf <- initBuffer
+    qbuf <- initBuffer
+    pbuf <- initBuffer
     s <- initShaders
-    return Resources { vertexBuffer = vbuf
+    return Resources { lineBuffer = lbuf
+                     , quadBuffer = qbuf
+                     , panelBuffer = pbuf
                      , shaders = s
                      , lineList = []
                      , lineCount = 0
                      , partialLine = Nothing
                      , mousePos = V2 0 0
-                     , winSize = Size 500 500
-                     , stream = []
-                     , streamVectorCount = 0
+                     , winSize = (500,500)
+                     , panels = []
+                     , panelCount = 0
                      , gridSize = 15
                      , polygons = [] }
 
 main :: IO ()
 main = do
-    (_progName, _args) <- getArgsAndInitialize
-    initialDisplayMode $= [DoubleBuffered, Multisampling]
-    initialWindowSize $= Size 500 500
-    _window <- createWindow "Source panel"
-    clientState VertexArray $= Enabled
-    res <- initResources
-    resRef <- newIORef res
-    displayCallback $= display resRef
-    reshapeCallback $= Just (reshape resRef)
-    keyboardMouseCallback $= Just (input resRef)
-    passiveMotionCallback $= Just (motion resRef)
-    mainLoop
+    success <- Graphics.UI.GLFW.init
+    when success $ do
+        setErrorCallback (Just errorCallback)
+        win <- fromJust <$> createWindow 500 500 "Panel method" Nothing Nothing
+        res <- initResources
+        resRef <- newIORef res
+        makeContextCurrent (Just win)
+        setWindowRefreshCallback win $ Just (display resRef)
+        setWindowSizeCallback win $ Just (reshape resRef)
+        setMouseButtonCallback win $ Just (mouseInput resRef)
+        setCursorPosCallback win $ Just (motion resRef)
+        mainLoop resRef win
+        terminate
 
-display :: IORef Resources -> DisplayCallback
-display _res = do
-    r <- get _res
-    let lCount          = lineCount r
-        vCount          = streamVectorCount r
-        vertexCount     = 2 * (lCount + vCount)
-        vertexBuf       = vertexBuffer r
-        shader          = shaders r
-        pos             = vertexPosition shader
-        transformMatrix = transform shader
-        prog            = program shader
-        size@(Size width height) = winSize r
-        mvp             = getOrtho 0 (fromIntegral width)
-                                   0 (fromIntegral height)
-        descriptor      = VertexArrayDescriptor 2 Float 0 U.offset0
-    clearColor $= Color4 0 0 0.3 1
-    clear [ ColorBuffer ]
-    viewport $= (Position 0 0, size)
-    currentProgram $= Just prog
-    U.asUniform mvp transformMatrix
-    vertexAttribArray pos $= Enabled
-    vertexAttribPointer pos $= (ToFloat, descriptor)
-    bindBuffer ArrayBuffer $= Just vertexBuf
-    drawArrays Lines 0 vertexCount
-    swapBuffers
+mainLoop :: IORef Resources -> Window -> IO ()
+mainLoop _res win = do
+    shouldClose <- windowShouldClose win
+    unless shouldClose $ do
+        waitEvents
+        --display _res win
+        swapBuffers win
+        mainLoop _res win
 
-reshape :: IORef Resources -> ReshapeCallback
-reshape _res size = do
-    _res $~! (\x -> x { winSize = size })
+errorCallback :: ErrorCallback
+errorCallback _ = putStrLn
+
+display :: IORef Resources -> WindowRefreshCallback
+display _res _ = do
+    r <- readIORef _res
+    let vertexCount = 2 * lineCount r
+        lineBuf     = lineBuffer r
+        quadBuf     = quadBuffer r
+        panelBuf    = panelBuffer r
+        shader      = shaders r
+        pbi         = panelBlockIndex shader
+        pos         = vertexPosition shader
+        prog        = program shader
+    putStrLn "glClearColor"
+    glClearColor 0.0 0.0 0.3 1.0
+    printGLErrors
+    putStrLn "glClear"
+    glClear GL_COLOR_BUFFER_BIT
+    printGLErrors
+    putStrLn "glUseProgram"
+    glUseProgram prog
+    printGLErrors
+    putStrLn "glVertexAttribPointer"
+    glVertexAttribPointer pos 2 GL_FLOAT GL_FALSE 0 nullPtr
+    printGLErrors
+    putStrLn "glEnableVertexAttribArray"
+    glEnableVertexAttribArray pos
+    printGLErrors
+    putStrLn "glBindBufferBase"
+    glBindBufferBase GL_UNIFORM_BUFFER pbi panelBuf
+    printGLErrors
+    putStrLn "glBindBuffer"
+    glBindBuffer GL_ARRAY_BUFFER quadBuf
+    printGLErrors
+    putStrLn "glDrawArrays (GL_TRIANGLE_STRIP)"
+    glDrawArrays GL_TRIANGLE_STRIP 0 4
+    printGLErrors
+    putStrLn "glUseProgram 0"
+    glUseProgram 0
+    printGLErrors
+    putStrLn "glBindBuffer"
+    glBindBuffer GL_ARRAY_BUFFER lineBuf
+    printGLErrors
+    putStrLn "glDrawArrays (GL_LINES)"
+    glDrawArrays GL_LINES 0 vertexCount
+    printGLErrors
+    putStrLn "glBindBuffer 0"
+    glBindBuffer GL_ARRAY_BUFFER 0
+    printGLErrors
+
+serializePanels :: [Panel] -> [Float]
+serializePanels = foldr foldingFunction []
+    where
+    foldingFunction (Line (V2 x1 y1) (V2 x2 y2), strength) acc =
+        x1:y1:x2:y2:strength:acc
+
+reshape :: IORef Resources -> WindowSizeCallback
+reshape _res _ width height = do
+    modifyIORef _res (\x -> x { winSize = (width,height) })
     updateFlow _res
-    postRedisplay Nothing
+    r <- readIORef _res
+    let qbuf = quadBuffer r
+        shader = shaders r
+        prog = program shader
+        tu  = transformUniform shader
+        mvp  = serializeMatrix4 $ getOrtho 0 (fromIntegral width)
+                                           0 (fromIntegral height)
+    putStrLn "glViewport"
+    glViewport 0 0 (toEnum width) (toEnum height)
+    printGLErrors
+    putStrLn "glUseProgram"
+    glUseProgram prog
+    printGLErrors
+    putStrLn "glUniformMatrix4fv"
+    withArray mvp $ \ptr -> glUniformMatrix4fv tu 1 GL_FALSE ptr
+    printGLErrors
+    let quad = [               0.0,                 0.0
+              , fromIntegral width,                 0.0
+              ,                0.0, fromIntegral height
+              , fromIntegral width, fromIntegral height] :: [GLfloat]
+    withArrayLen quad $ \len ptr->
+        do
+        let bytes = len * sizeOf (head quad)
+        putStrLn "glNamedBufferData"
+        glNamedBufferData qbuf (toEnum bytes) ptr GL_STATIC_DRAW
+        printGLErrors
 
-motion :: IORef Resources -> MotionCallback
-motion _res (Position x y) = _res $~! (\r -> r {mousePos = V2 (fromIntegral x) (fromIntegral y)})
+motion :: IORef Resources -> CursorPosCallback
+motion _res _ x y = modifyIORef _res (\r -> r {mousePos = V2 (double2Float x) (double2Float y)})
 
-input :: IORef Resources -> KeyboardMouseCallback
-input _res _key Down _modifiers p = do
-    r <- get _res
-    case _key of
-        MouseButton LeftButton  -> click _res (translateGLUTCoords (winSize r) p)
-        _                       -> return ()
-input _ _ _ _ _ = return ()
+mouseInput :: IORef Resources -> MouseButtonCallback
+mouseInput _res _ _button MouseButtonState'Pressed _ =
+    case _button of
+        MouseButton'1 -> click _res
+        _             -> return ()
+mouseInput _ _ _ _ _ = return ()
 
-translateGLUTCoords :: Size -> Position -> FV2
-translateGLUTCoords (Size _ height) (Position x y) = V2 (fromIntegral x) (fromIntegral $ height - y)
+--translateGLUTCoords :: Size -> Position -> FV2
+--translateGLUTCoords (Size _ height) (Position x y) = V2 (fromIntegral x) (fromIntegral $ height - y)
 
 findEndpoint :: FV2 -> [Line] -> Maybe FV2
 findEndpoint p = find (\v -> qd v p < 100) . foldr (\(Line v1 v2) acc-> v1:v2:acc) []
@@ -155,58 +289,67 @@ findClosedPolygon ls = ([],ls) --(connected,rest)
             Nothing -> acc
             Just _  -> v1:acc) [] ls
 
-click :: IORef Resources -> FV2 -> IO ()
-click _res _position = do
-    r <- get _res
+click :: IORef Resources -> IO ()
+click _res = do
+    r <- readIORef _res
     let ls       = lineList r
         lCount   = lineCount r
+        position = mousePos r
         partial  = partialLine r
         polys    = polygons r
-        existing = findEndpoint _position ls
-        p        = head $ catMaybes (existing : [Just _position])
+        existing = findEndpoint position ls
+        p        = head $ catMaybes (existing : [Just position])
     case partial of
         Nothing ->
-            _res $~! (\x -> x { partialLine = Just p } )
+            modifyIORef _res (\x -> x { partialLine = Just p } )
         Just oldPoint ->
             unless (oldPoint == p) $ do
                 let newLines = Line oldPoint p : ls
                     pair = findClosedPolygon newLines
                 case pair of
                     ([],_)         ->
-                        _res $~! (\x ->
+                        modifyIORef _res (\x ->
                             x { lineList = newLines
                               , lineCount = lCount + 1
                               , partialLine = Nothing } )
                     (polygon,rest) ->
-                        _res $~! (\x ->
+                        modifyIORef _res (\x ->
                             x { lineList = rest
                               , lineCount = toEnum $ length rest
                               , polygons = polygon:polys
                               , partialLine = Nothing} )
-                -- print pair
                 updateFlow _res
-                postRedisplay Nothing
 
 updateFlow :: IORef Resources -> IO ()
 updateFlow _res = do
-    r <- get _res
-    let ls                = lineList r
-        Size width height = winSize r
-        gs                = gridSize r
-        newStream         = calculateStream ls
-        visualization     = visualizeStream (0, fromIntegral width, 0, fromIntegral height, gs) newStream
-    vb <- U.makeBuffer ArrayBuffer (serialize $ ls ++ visualization :: [GLfloat])
-    _res $~! (\x -> x { stream = newStream
-                      , vertexBuffer = vb
-                      , streamVectorCount = toEnum $ length visualization} )
+    r <- readIORef _res
+    let ls       = lineList r
+        panelBuf = panelBuffer r
+        shader   = shaders r
+        prog     = program shader
+        npu      = numPanelsUniform shader
+        newFlow  = calculateFlow ls
+        newPanelCount = toEnum $ length newFlow
+    print newFlow
+    print newPanelCount
+    glUseProgram prog
+    glUniform1i npu newPanelCount
+    let mydata = serializePanels newFlow
+    withArrayLen (serializePanels newFlow :: [GLfloat]) $ \len ptr->
+        do
+        let bytes = len * sizeOf (head mydata)
+        print len
+        print bytes
+        glNamedBufferData panelBuf (toEnum bytes) ptr GL_STATIC_DRAW
+    modifyIORef _res (\x -> x { panels = newFlow
+                      , panelCount = newPanelCount} )
     where
-    serialize = concatMap deVector . concatMap deLine
-    deVector (V2 x y) = [x,y]
+    --serializeLines = concatMap serializeVector2 . concatMap deLine
     deLine (Line v1 v2) = [v1,v2]
 
 
-calculateStream :: [Line] -> [(Line,Float)]
-calculateStream ls =
+calculateFlow :: [Line] -> [Panel]
+calculateFlow ls =
     let numberedList = zip [(0::Int)..] ls
         equations = map (\z@(_,target) ->
             (foldr (foldingFunction z) [] numberedList, -freestreamStrength target)
@@ -257,9 +400,9 @@ freestreamStrength :: Line -> Float
 freestreamStrength l = getNormal l `dot` freestreamVelocity
 
 integralCoefficient :: FV2 -> Line -> FV2
-integralCoefficient target panel = foldl' integration (V2 0 0) chunks
+integralCoefficient tarreadIORef panel = foldl' integration (V2 0 0) chunks
     where
-    integration acc v = acc + (target - v) ^* (ds / qd target v)
+    integration acc v = acc + (tarreadIORef - v) ^* (ds / qd tarreadIORef v)
     (chunks,ds) = discretize panel subDivisions
     subDivisions = 100
 
@@ -269,4 +412,4 @@ totalVelocity sources p2 = sourceContrib + freestreamVelocity
     sourceContrib = foldl' (\acc panel-> acc + velocityContribAt p2 panel) (V2 0 0) sources
 
 velocityContribAt :: FV2 -> (Line,Float) -> FV2
-velocityContribAt target (panel,strength) = integralCoefficient target panel ^* (strength/(2*pi))
+velocityContribAt tarreadIORef (panel,strength) = integralCoefficient tarreadIORef panel ^* (strength/(2*pi))
